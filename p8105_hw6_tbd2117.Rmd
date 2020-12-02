@@ -363,8 +363,6 @@ boot_results %>%
     lcl_log = quantile(log_b1b2, 0.025),
     ucl_log = quantile(log_b1b2, 0.975),
   )
-
-round(ci$lcl_r2, 2)
 ```
 
 The boostrap 95% CI for r^2 is (`r round(ci$lcl_r2, 3)`, `r round(ci$ucl_r2, 3)`) and the the bootstrap 95% CI for log(beta_zero*beta_one) is (`r round(ci$lcl_log, 3)`, `r round(ci$ucl_log, 3)`).
