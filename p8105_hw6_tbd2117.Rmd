@@ -6,6 +6,9 @@ output: github_document
 
 ```{r setup, include = FALSE}
 library(tidyverse)
+library(corrr)
+library(modelr)
+library(patchwork)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -32,7 +35,7 @@ Loading homicide data, creating `city_state` variable, binary `homicide_solve`, 
 
 ```{r, message = FALSE, warning = FALSE}
 homicide = 
-  read_csv("./data/homicide-data.csv") %>% 
+  read_csv("./data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
   mutate(city_state = str_c(city, ", ", state)) %>% 
   filter(
     !city_state == c("Tulsa, AL", "Dallas, TX", "Phoenix, AZ", "Kansas City, MO"),
@@ -44,7 +47,8 @@ homicide =
                         disposition %in% c("Open/No arrest", "Closed without arrest") ~ 0,
                         disposition == "Closed by arrest" ~ 1
                       )
-  )
+  ) %>% 
+  select(city_state, homicide_solved, victim_age, victim_sex, victim_race)
 ```
 
 Estimated adjusted **odds ratio** for solving homicides comparing non-white victims to white victims keeping all other variables fixed.
@@ -65,19 +69,17 @@ homicide %>%
     OR = exp(estimate),
     UCL = exp(estimate + (1.96*std.error)),
     LCL = exp(estimate - (1.96*std.error)),
-   OR = round(OR, 2),
-   UCL = round(UCL, 2),
-   LCL = round(LCL, 2),
     term = str_replace(term, "victim_raceBlack", "Non-white vs. white victims ")
   ) %>% 
   select(term, OR, LCL, UCL) %>% 
-  knitr::kable()
+  knitr::kable(digits = 2)
 ```
 
 Adjusted odds ratio (and CI) for solving homicides comparing Black victims to white victims by city.
 
 ```{r}
-homicide %>% 
+homicide_results = 
+  homicide %>% 
   mutate(
     victim_race = fct_relevel(victim_race, "White")
   ) %>% 
@@ -92,17 +94,16 @@ homicide %>%
   ) %>% 
   select(-data, -models) %>% 
   unnest(results) %>% 
-  filter(term == "victim_raceBlack") %>% 
   mutate(
     OR = exp(estimate),
     UCL = exp(estimate + (1.96*std.error)),
     LCL = exp(estimate - (1.96*std.error)),
-   OR = round(OR, 2),
-   UCL = round(UCL, 2),
-   LCL = round(LCL, 2),
-    term = str_replace(term, "victim_raceBlack", "Non-white vs. white victims ")
+    term = str_replace(term, "victim_raceBlack", "Non-white vs. white victims")
   ) %>% 
-  select(city_state, OR, LCL, UCL) %>%
+  select(city_state, term, OR, LCL, UCL)
+
+homicide_results %>%
+  filter(term == "Non-white vs. white victims") %>% 
   mutate(city_state = fct_reorder(city_state, OR)) %>% 
   ggplot(aes(x = city_state, y = OR)) + 
   geom_point() +
@@ -112,3 +113,258 @@ homicide %>%
   ylab("OR (95%CI)")
 ```
 
+In most cities black victims have a lower likelihood than white victims to have solved homicides adjusting for age and sex. Omaha, NE has the lowest likelihood of the cities analyzed. On the other hand, in San Bernardino, CA, a black victim has almost 50% more odds to have a solved homicide when compared to a white victim.
+
+### Problem 2
+
+Loading data and cleaning
+
+```{r}
+birthweight_df = 
+  read_csv("./data/birthweight.csv") 
+
+baby_df =
+  birthweight_df %>% 
+  mutate(
+    babysex = case_when(babysex == 1 ~ "male",
+                        babysex == 2 ~ "female"),
+    frace = as.factor(frace),
+    mrace = as.factor(mrace)
+  )
+
+# skimr::skim(birthweight_df)
+```
+
+Looking at colinearity among variables...
+
+```{r}
+correlate(birthweight_df) %>%
+select_if(~any(. > 0.7))
+```
+
+Removing `ppwt` because of its colinearity with `delwt` and `ppbmi`. 
+Also, bmi at delivery saves a df (created `bmi_del` from `delwt` and `mheight`).
+
+Now checking non-significant predictors...
+
+```{r}
+baby_df %>% 
+  mutate(
+    del_bmi = (delwt / (mheight)^2)*703
+  ) %>% 
+  select(-ppwt, -delwt, -mheight) %>% 
+  lm(bwt ~ ., data = .) %>% 
+  broom::tidy() %>% 
+  filter(p.value > 0.05)
+```
+
+Looking at race frequencies...
+
+```{r}
+baby_df %>% 
+  group_by(frace) %>% 
+  count()
+
+baby_df %>% 
+  group_by(mrace) %>% 
+  count()
+```
+
+Opted to remove frace and colapse mother races with less frequency (1= white, 2 = black, 3 = other).
+
+Then, looking at the model without `fincome`, `malform`, `menarche`, `momage`, and `parity` (and `pnumlbw` and `pnumsga` due to low frequency)...
+
+```{r}
+baby_df %>% 
+  mutate(
+    del_bmi = (delwt / (mheight)^2)*703,
+    mrace_3 = case_when(mrace == 1 ~ "White",
+                      mrace == 2 ~ "Black",
+                      mrace != 1|2 ~ "Other")
+  ) %>% 
+  select(-frace, -mrace, -ppwt, -delwt, -mheight, -fincome, -malform, -menarche, -momage, -parity, -pnumlbw, -pnumsga) %>% 
+  lm(bwt ~ ., data = .) %>% 
+  broom::tidy()
+```
+
+Saving my model df...
+
+```{r}
+baby_df = 
+  baby_df %>% 
+  mutate(
+    del_bmi = (delwt / (mheight)^2)*703,
+    mrace_3 = case_when(mrace == 1 ~ "White",
+                      mrace == 2 ~ "Black",
+                      mrace != 1|2 ~ "Other")
+  )
+
+fit1 =
+  baby_df %>% 
+  lm(bwt ~ babysex + bhead + blength + gaweeks + ppbmi + smoken + wtgain + del_bmi + mrace_3, data = .)
+```
+
+Plot of residuals against fitted values...
+
+```{r}
+baby_df %>% 
+  modelr::add_residuals(fit1) %>%
+  modelr::add_predictions(fit1) %>%
+  ggplot(aes(x = resid, y = pred)) +
+  geom_violin()
+```
+
+Creating comparison models...
+
+```{r}
+fit2 =
+  baby_df %>% 
+  lm(bwt ~ blength + gaweeks, data = .)
+
+fit3 = 
+  baby_df %>% 
+  lm(bwt ~ bhead*blength*babysex, data = .)
+```
+
+Cross validation...
+
+```{r}
+cv_df =
+  crossv_mc(baby_df, nrow(baby_df)) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+Getting RMSEs for the three models...
+
+```{r}
+cv_df =
+  cv_df %>% 
+  mutate(
+    fit1 = map(.x = train, ~lm(bwt ~ babysex + bhead + blength + gaweeks + ppbmi + smoken + wtgain + del_bmi +                                mrace_3, data = .x)),
+    fit2 = map(.x = train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    fit3 = map(.x = train, ~lm(bwt ~ bhead*blength*babysex, data = .x)),
+    rmse_fit1 = map2_dbl(.x = fit1, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_fit2 = map2_dbl(.x = fit2, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_fit3 = map2_dbl(.x = fit3, .y = test, ~rmse(model = .x, data = .y))
+  )
+```
+
+Generating plot to compare RMSEs:
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+```
+
+The model _fit1_ has the smallest prediction error based on MRSEs and seems to be the best fit for predicting birthweigth amongst the three models.
+
+### Problem 3
+
+Weather df...
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31")
+
+weather_df = 
+  weather_df %>%  
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+Pulling r^2 and log(beta_zero*beta_one) from the specific model...
+
+```{r}
+lm(tmax ~ tmin, data = weather_df) %>% 
+  broom::glance() %>% 
+  select(r.squared)
+
+lm(tmax ~ tmin, data = weather_df) %>% 
+  broom::tidy() %>% 
+  select(term, estimate) %>%
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    log_b1b2 = log(`(Intercept)`*tmin)
+  )
+```
+
+Bootstraping and pulling r^2 and log(b1*b2) from each model...
+ 
+```{r}
+boot_results = 
+  weather_df %>% 
+  bootstrap(5000, id = "strap_number") %>%
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    tidy = map(models, broom::tidy),
+    glance = map(models, broom::glance)
+  ) %>% 
+  select(strap_number, tidy, glance) %>% 
+  unnest(tidy, glance) %>% 
+  select(strap_number, term, estimate, r.squared) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    log_b1b2 = log(`(Intercept)`*tmin)
+  ) %>% 
+  select(strap_number, r.squared, log_b1b2)
+```
+
+Ploting estimates...
+
+```{r}
+r2 =
+  boot_results %>%
+  ggplot(aes(x = r.squared)) + 
+  geom_density()
+
+log =
+  boot_results %>%
+  ggplot(aes(x = log_b1b2)) + 
+  geom_density()
+
+r2 + log
+```
+
+* The distribution of estimated r^2 and log(beta_zero*beta_one) are very similar.
+
+Creating 95% CIs for the estimates:
+```{r}
+ci =
+boot_results %>% 
+  summarise(
+    mean_r2 = mean(r.squared),
+    lcl_r2 = quantile(r.squared, 0.025),
+    ucl_r2 = quantile(r.squared, 0.975),
+    mean_log = mean(log_b1b2),
+    lcl_log = quantile(log_b1b2, 0.025),
+    ucl_log = quantile(log_b1b2, 0.975),
+  )
+
+round(ci$lcl_r2, 2)
+```
+
+The boostrap 95% CI for r^2 is (`r round(ci$lcl_r2, 3)`, `r round(ci$ucl_r2, 3)`) and the the bootstrap 95% CI for log(beta_zero*beta_one) is (`r round(ci$lcl_log, 3)`, `r round(ci$ucl_log, 3)`).
